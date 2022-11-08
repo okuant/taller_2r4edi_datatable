@@ -1,0 +1,402 @@
+---
+title: "Una introducción a `data.table`"
+format: html
+editor: visual
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+options(datatable.print.nrows = 10)
+library(data.table)
+```
+
+# ¿Qué es [`data.table`](https://rdatatable.gitlab.io/data.table/)?
+
+-   Un paquete de R alojado en CRAN desde 2006 cuyos autores son Matt Dowle y Arun Srinivasan, aunque han contribuído a su desarrollo unas 100 personas.
+-   Proporciona una mejora considerable al objeto base de R `data.frame` en tres aspectos: funcionalidad, velocidad de procesado y **gestión de memoria**.
+-   No depende de ningún otro paquete de R salvo la instalación base, lo que facilita su mantenimiento y desarrollo.
+-   Como muchos otros paquetes, tiene [cheatsheet](https://raw.githubusercontent.com/rstudio/cheatsheets/master/datatable.pdf).
+
+# Leyendo y escribiendo
+
+## `flights`
+
+El dataset que vamos utilizar en el taller es el dataset de `flights` que se puede encontrar [aquí](https://raw.githubusercontent.com/Rdatatable/data.table/master/vignettes/flights14.csv) y también en el repo. Este dataset es un registro de vuelos que partieron desde aeropuertos de Nueva York (JFK, LGA, EWR = Newark Liberty Airport) y que fueron efectuados a lo largo del año 2014.
+
+```{r}
+dt <- fread("flights.csv")
+```
+
+## `fread` y `fwrite`
+
+`data.table` tiene una implementación propia de las funciones de lectura y escritura de datos que sustituyen a las conocidas `read.*` y `write.*`, estas son `fread` y `fwrite`.
+Las funciones `fread` y `fwrite` tienen un mejor desempeño que las funciones base de R y ofrecen más funcionalidades.
+
+  - No transforma de manera automática y por defecto las columnas de tipo *character* a factores.
+  - Además de los tipos de inputs soportados por las funciones `read.*` también soporta comandos de la shell que preprocesen el archivo.
+
+En el *chunk* de abajo vemos un ejemplo con *grep* que lee todas las filas del conjunto de datos salvo aquellas que contenga la palabra `JFK` (aeropuerto de NYC).
+
+```{r}
+# Ejemplo con grep: lee todas las filas del conjunto de datos salvo aquellas que tengan
+# la palabra JFK (aeropuerto de NYC)
+dt <- fread(input = "grep -v JFK ./flights.csv")
+dt[, .N, origin]
+```
+
+## Pasando de `data.frame` a `data.table`
+
+Los dos métodos que se pueden utilizar para pasar de un objeto `data.frame` a uno `data.table` son `setDT`, por referencia, y `as.data.table` mediante una copia completa del objeto. Ojo! Un objeto data.table no tiene rownames, pero podemos mantenerlos como una nueva columna mediante el argumento `keep.rownames = TRUE`.
+
+```{r}
+set.seed(543)
+df <- data.frame(sexo = rep(c("M", "F"), 5),  
+                 altura = rnorm(10, 1.65, 0.20),
+                 row.names = LETTERS[1:10])
+df
+
+# copia completa
+dt <- as.data.table(df)
+dt
+rownames(dt)
+dt <- as.data.table(df, keep.rownames =  T)
+dt
+
+# por referencia
+setDT(df)
+df
+rownames(df)
+```
+
+# Primeros pasos
+
+## La filosofía DT\[i, j, k\]
+
+Dentro de los corchetes `[]` no se seleccionan únicamente filas y columnas, ocurren muchas más cosas. Las *queries* se organizan, generalmente en:
+
+-   i: ¿En qué filas?
+-   j: ¿Qué?
+-   k: ¿Agrupado por?
+
+```{r, eval=FALSE}
+DT[i = ¿En qué filas?, j = ¿Qué?, k = ¿Agrupado por?]
+```
+
+## Lo básico
+
+- Adiós al símbolo `$`.
+- El símbolo .() es un alias de list(). Generalmente se usa más el primero.
+
+### Filas, i
+
+Acceder a ellas mediante índices sigue siendo válido, con algunas diferencias.
+
+-   ¿Cómo obtener el subconjunto de todos los vuelos que partieron del aeropuerto "JFK" en junio?
+
+```{r}
+dt[origin == "JFK" & month == 6]
+```
+
+-   ¿Cómo obtener las 5 primeras filas del dataset? A diferencia de un `data.frame`, el código de abajo devuelve filas, no columnas!
+
+```{r}
+dt[1:5] # 
+```
+
+-   ¿Cómo ordenar la tabla de datos de manera que el retraso en la salida aparezca en orden ascendente? ¿Y descendente? **Nota:** Los números negativos corresponden a vuelos que se han adelantado.
+
+```{r}
+# ascendente
+dt[order(dep_delay)]
+# descendente
+dt[order(-dep_delay)]
+```
+
+### Columnas, j
+
+Veamos con ejemplos las distintas formas de seleccionar columnas.
+
+-   Seleccionamos la columna `origin` de dos formas distintas. La primera nos devuelve un objeto de tipo vector, la segunda un `data.table` con una columna
+
+```{r}
+dt[, origin]
+dt[, .(origin)] # idéntico a dt[, list(arr_delay)]
+```
+
+-   Seleccionamos varias columnas y renombramos la salida.
+
+```{r}
+dt[, list(origin, dest)]
+dt[, .(origen = origin, destino = dest)]
+```
+
+-   Seleccionamos columnas usando los nombres de estas como caracteres.
+
+```{r}
+# opción 1
+dt[, c("origin", "dest")]
+
+# opción 2
+var.names <- c("origin", "dest")
+# lo siguiente da error: data.table está buscando una columna
+# que se llame var.names y no la encuentra
+dt[, var.names]
+# la forma correcta
+dt[, var.names, with =  F] 
+dt[, ..var.names]
+```
+
+### Operando en j
+
+En `j` no sólo se seleccionan columnas, es un `environment` en el que se pueden hacer todo tipo de operaciones. El resultado debe ser una lista, donde cada elemento de la lista será una columna del nuevo `data.table`.
+
+-   ¿Cómo calcular el retraso total de cada vuelo? ¿Y el número de vuelos cuyo retraso total es negativo?
+
+```{r}
+dt[, .(total_delay = arr_delay + dep_delay)]
+dt[, .(total_delay = arr_delay + dep_delay)][, sum(total_delay < 0)]
+```
+
+### Subseteamos en i y calculamos en j
+
+-   ¿Cuál es la media de retrasos tanto en la salida como en la llegada en vuelos que partieron el mes de junio desde el aeropuerto JFK?
+
+```{r}
+dt[origin == "JFK" & month == 6, .(mean_dep = mean(dep_delay),
+                                   mean_arr = mean(arr_delay))]
+```
+
+-   ¿Cuántos vuelos salieron desde el aeropuerto JFK?
+
+```{r}
+dt[origin == "JFK", .N]
+```
+
+### Agrupando por k
+
+Las variables en `k` se especifican indistintamente mediante `.()` o su nombre en caracteres. Cuando es sólo una no es necesario el `.()`
+
+-   ¿Cuántos vuelos hay para cada par origen-destino? ¿Cuál fue su retraso medio tanto en la salida como en la llegada?
+
+```{r}
+dt[, .(n_flights = .N), .(origin, dest)]
+dt[, 
+   .(n_flights = .N, 
+     mean_dep_del = mean(dep_delay),
+     mean_arr_del = mean(arr_delay)), 
+   c("origin", "dest")]
+```
+
+-   ¿Y el mismo cálculo anterior únicamente para vuelos de la compañía AA?
+
+```{r}
+dt[carrier == "AA",
+   .(n_flights = .N, 
+     mean_dep_del = mean(dep_delay),
+     mean_arr_del = mean(arr_delay)), 
+   by = .(origin, dest)]
+```
+
+-   ¿Y ordenando por número de vuelos ascendente?
+
+```{r}
+dt[carrier == "AA",
+   .(n_flights = .N, 
+     mean_dep_del = mean(dep_delay),
+     mean_arr_del = mean(arr_delay)), 
+   .(origin, dest)][
+     order(n_flights)
+   ]
+```
+
+-   ¡¿Expresiones en k?!
+
+```{r}
+dt[, 
+   .(n_flights = .N), 
+   .(dep_delay > 0, arr_delay > 0)]
+dt[, 
+   .(mean_dep_del = mean(dep_delay), 
+     mean_arr_del = mean(arr_delay)), 
+   .(dep_delay > 0, arr_delay > 0)]
+```
+
+### El objeto .SD
+
+El objeto `.SD` es una partición de los datos de acuerdo a una variable de agrupación especificada en `k`. Asociado a este está el argumento `.SDcols` que permite seleccionar columnas por nombre o de acuerdo a criterios. 
+
+Abajo vemos qué forma tiene el objeto `.SD` que no es más que una tabla subconjunto de la total cuando especificamos algo en la `k`.
+
+```{r}
+DT <- data.table(sexo = rep(c("M", "F"), 5),  
+                 altura = rnorm(10, 1.65, 0.20))
+DT[, print(.SD), by = sexo]
+```
+
+-   Obtener la media de todas las variables numéricas de flights para cada aeropuerto de salida:
+
+```{r}
+dt[, lapply(.SD, mean), by = origin, .SDcols = sapply(dt, is.numeric)]
+dt[, lapply(.SD, mean), by = origin, .SDcols = is.numeric]
+```
+
+-   Obtener las dos primeras observaciones para cada uno de los meses:
+
+```{r}
+dt[, head(.SD, 2), month]
+```
+
+# El operador :=
+
+Hasta ahora solo hemos ejecutado código que agrega el `data.table` y nos devuelve la tabla agregada. Pero, ¿Cómo podemos modificar variables ya existentes en el `data.table` o añadir nuevas? Con el operador `:=`.
+
+Este operador define nuevas columnas o modifica, **por referencia**, las columnas ya existentes. Hay dos formas de utilizarlo:
+
+- La forma `LHS := RHS`
+
+```{r}
+DT[, c("colA", "colB", ...) := list(valA, valB, ...)]
+# si solo es una columna
+DT[, colA := valA]
+```
+
+- La forma funcional
+
+```{r}
+DT[, `:=`(colA = valA, # valA se asigna a colA
+          colB = valB, # valB se asigna a colB
+          ...
+)]
+```
+
+-   Definiendo las variables `speed` y `total_delay` de dos formas distintas
+
+```{r}
+dt[, c("speed", "total_delay") := list(distance/air_time, arr_delay + dep_delay)]
+```
+
+-   Corrigiendo la variable `hour`
+
+```{r}
+unique(dt$hour)
+dt[, unique(hour)] # sintaxis más propia de data.table
+dt[hour == 24, hour := 0]
+```
+
+-   Definiendo la variable velocidad máxima por aeropuerto de salida
+
+```{r}
+dt[, max_speed := max(speed), origin]
+dt
+```
+
+-   Definiendo las variables retraso máximo en salida y llegada en cada mes. Ojo! la función c() es necesaria, `data.table` esperaría que `out_cols` fuese una variable del `data.table`.
+
+```{r}
+in_cols <- c("arr_delay", "dep_delay")
+out_cols <- c("max_arr_delay", "max_dep_delay")
+dt[, c(out_cols) := lapply(.SD, max), .SDcols = in_cols, by = month]
+```
+
+-   Eliminando variables
+
+```{r}
+dt[, c(out_cols) := NULL] 
+```
+
+-   La función `copy()`
+
+```{r}
+function(dt){
+  DT <- copy(dt)
+  ...
+  ...
+}
+```
+
+# Subseteando muuuuuy rápido con keys
+
+## Keys vs rownames
+
+- Los rownames deben ser únicos, las keys no, y además, pueden estar formadas por distintas columnas.
+- Las *keys* pueden ser primarias o secundarias, estas últimas se conocen como índices.
+- Las *keys* permiten realizar búsquedas binarias en lugar de fila a fila, lo que disminuye considerablemente el tiempo de cómputo.
+
+## Búsqueda binaria
+
+- Supongamos que tenemos un conjunto de números ordenado 1, 5, 10, 19, 22, 23, 30, ordenado y queremos calcular la posición del número 10.
+- La búsqueda binaria consiste en partir el conjunto de datos en mitades sucesivas e ir comprobando en qué mitad debe estar el elemento que buscamos hasta dar con el elemento mismo.
+
+## Keys o keys primarias
+
+- Se definen con `setkey()` o `setkeyv()` e implican el reordenamiento en memoria de la tabla de datos. Sólo puede haber una.
+
+```{r}
+# Definición de keys
+setkey(dt, origin, dest)
+key(dt)
+# La nueva key borra la anterior
+setkeyv(dt, c("month"))
+key(dt)
+```
+
+- Una vez definidas las *keys* se buscan filas de forma sencilla en la `i`.
+
+```{r}
+# Definimos la key
+setkey(dt, origin, dest)
+key(dt)
+# Obteniendo elementos
+dt["JFK"] # origin = "JFK"
+dt[.("JFK")]
+dt[.("JFK", c("LAX", "ATL"))] # origin = "JFK" y dest = "LAX" ó "ATL"
+# ¿Y si queremos subsetear solo valores para dest?
+dt[.(unique(origin), "LAX")]
+```
+
+- Modificar los elementos de una columna que define una *key* tiene el efecto secundario de borrar la *key*.
+
+```{r}
+setkey(dt, hour)
+key(dt)
+dt[.(13), hour := 1]
+key(dt)
+```
+
+## Índices o keys secundarias
+
+- Se definen con `setindex()` o `setindexv()` y NO reordenan la tabla de datos en memoria. Se pueden definir varios índices.
+
+```{r}
+setindex(dt, month)
+indices(dt)
+setindexv(dt, "origin")
+indices(dt)
+```
+
+- Para usarlos se debe especificar el índice a usar en el argumento `on`.
+
+```{r}
+dt[.(5), on = "month"]
+```
+
+-  También pueden usarse *on the fly* con el argumento `on` sin haber sido definidos previamente.
+
+```{r}
+dt[.(3), on = .(hour)]
+indices(dt)
+```
+
+- Los operadores `==` e `%in%` definen índices.
+
+```{r}
+dt[carrier == "AA"]
+dt[dest %in% c("ATL")]
+indices(dt)
+```
+
+
+# Más info
+
+- [http://rdatatable.gitlab.io/data.table/index.html](http://rdatatable.gitlab.io/data.table/index.html)
+
